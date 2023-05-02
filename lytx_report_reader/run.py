@@ -11,23 +11,32 @@ def get_month_end(date: datetime=datetime.today()):
     month_end = (date - timedelta(days=date.day)).date()
     return month_end
 
-class EventsReport:
-    def __init__(self, start_date: datetime=get_month_start(), end_date: datetime=get_month_end(), create_file: bool=True):
+
+class Report:
+    def __init__(self, report_directory:str, start_date: datetime=get_month_start(), end_date: datetime=get_month_end()):
+        self.report_directory = report_directory
         self.start_date = start_date
         self.end_date = end_date
-        self.directory = f'{os.getcwd()}/reports/'
-        print('<-- Reading Individual Reports -->')
+
+    def merge_reports(self, left_df: pd.DataFrame, right_df: pd.DataFrame, merge_column:str) -> pd.DataFrame:
+        print('INFO: Merging reports')
+        dataframe =  pd.merge(left_df, right_df, how='left', on=merge_column)
+        dataframe = dataframe.fillna(0)
+        return dataframe
+
+class EventsReport(Report):
+    def __init__(self, report_directory, start_date: datetime=get_month_start(), end_date: datetime=get_month_end()):
+        super().__init__(report_directory, start_date, end_date) 
+        print('EVENT INFO: Reading Individual Reports')
         try:
             self.read_all_reports()
         except TypeError as e:
             print(e)
-        print('<-- Combining Reports -->')
+        print('EVENT INFO: Combining Reports')
         self.base_report = self.combine_all_dataframes()
-        print('<-- Creating Final Report -->')
+        print('EVENT INFO: Creating Final Events Report')
         self.final_report = self.create_final_report()
-        if create_file:
-            print(f'<-- Saving Report to {os.getcwd()}\lytx_report_{start_date}.csv -->')
-            self.final_report.to_csv(f'lytx_report_{start_date}.csv')
+
 
     def read_csv_to_dataframe(self, file_name: str, report_type: str) -> pd.DataFrame:
         """Returns dataframe from CSV
@@ -52,14 +61,16 @@ class EventsReport:
             TypeError: Invalid file types get skipped.
         """
         self.all_reports = []
-        for root, dirs, files in os.walk(self.directory):
+        for root, dirs, files in os.walk(self.report_directory):
             for file in files:
+                if file == 'accidents_report.csv':
+                    print('EVENT INFO: Skipped Accident Report')
+                    continue
                 if file.endswith('.csv'):
                     report_type = file.replace('.csv', '').upper()
                     self.all_reports.append(self.read_csv_to_dataframe(f'{root}{file}', report_type))
                 else:
-                    print(f'Skipped {file}...')
-                    raise TypeError(f'{file} is an invalid file type')
+                    raise TypeError(f'EVENTS ERROR: {file} is an invalid file type. Skipping this File.')
 
     def combine_all_dataframes(self) -> pd.DataFrame:
         """
@@ -100,6 +111,62 @@ class EventsReport:
             rows.append(driver_row)
         return pd.DataFrame(rows)
 
-report = EventsReport(create_file=False)
+    def final_report_to_csv(self, save_path: str=None):
+        """Creates CSV of final report. If save_path is provided the file will be saved there. If not it will be saved in current directory.
+        Args:
+            save_path (str, optional): Location you would like to save the new CSV to. Defaults to None.
+        """
+        file_name = f'lytx_report_{self.start_date}.csv'
+        print(f'<-- Saving Report to {os.getcwd()}\lytx_report_{self.start_date}.csv -->')
+        if save_path:
+            self.final_report.to_csv(f'{save_path}{file_name}', index=False, header=False)
+        else:
+            self.final_report.to_csv(file_name, index=False, header=False)
 
-# print(pd.read_csv('accidents.csv'))
+class AccidentReport(Report):
+    def __init__(self, report_directory, accidents_csv:str='accidents_report.csv', start_date: datetime=get_month_start(), end_date: datetime=get_month_end()):
+        super().__init__(report_directory, start_date, end_date) 
+        self.accidents_csv = accidents_csv
+        print('ACCIDENT INFO: Verifying Accident Report Exists')
+        try:
+            self.find_file()
+        except FileNotFoundError as e:
+            print(e)
+        print('ACCIDENT INFO: Creating base Accidents Report')
+        self.base_accidents_csv = self.read_file_to_dataframe()
+        print('ACCIDENT INFO: Creating Final Accidents Report')
+        self.final_report = self.create_final_report()
+
+    def find_file(self):
+        if os.path.isfile(f'{self.report_directory}{self.accidents_csv}'):
+            print('ACCIDENT INFO: Accident File Found')
+            return
+        else:
+            raise FileNotFoundError(f'ACCIDENT ERROR: {self.accidents_csv} not found in reports directory')
+
+    def read_file_to_dataframe(self) -> pd.DataFrame:
+        dataframe = pd.read_csv(f'{self.report_directory}{self.accidents_csv}')
+        dataframe = dataframe[['Driver', 'Accident date', 'Preventable']]
+        dataframe = dataframe.rename(columns={'Driver': 'DRIVER'})
+        dataframe['Accident date'] = pd.to_datetime(dataframe['Accident date']).dt.date
+        dataframe['Preventable'] = dataframe['Preventable'].replace({'Yes': True, 'No': False})
+
+        return dataframe
+    
+    def create_final_report(self):
+        total_preventable_accidents = self.base_accidents_csv.loc[self.base_accidents_csv['Preventable'] == True]
+        driver_dataframes = []
+        drivers = total_preventable_accidents.groupby('DRIVER')
+        for driver_code, driver in drivers:
+            month_accidents = driver.loc[(driver['Accident date'] < self.end_date) & (driver['Accident date'] > self.start_date)]
+            driver_dataframes.append(
+                {
+                    'DRIVER': driver_code,
+                    'ACCIDENTS THIS MONTH': len(month_accidents),
+                    'TOTAL ACCIDENTS': len(driver)
+                })
+        dataframe = pd.DataFrame(driver_dataframes)
+        return dataframe
+
+report = EventsReport(f'{os.getcwd()}/reports/')
+accident_report = AccidentReport(f'{os.getcwd()}/reports/')
